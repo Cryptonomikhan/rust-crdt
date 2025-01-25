@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::hash::Hash;
-
 use crate::VClock;
 
 /// Common Actor type. Actors are unique identifier for every `thing` mutating a VClock.
