@@ -11,15 +11,17 @@
 //! b.apply(Dot::new("A", 1));
 //! assert!(a > b);
 //! ```
-
 use core::cmp::{self, Ordering};
 use core::convert::Infallible;
 use core::fmt::{self, Debug, Display};
 use core::mem;
 use std::collections::{btree_map, BTreeMap};
+use std::hash::Hash;
 
+use num::BigUint;
 use serde::{Deserialize, Serialize};
-
+use tiny_keccak::{Hasher, Sha3};
+use crate::merkle_reg::Sha3Hash;
 use crate::{CmRDT, CvRDT, Dot, DotRange, ResetRemove};
 
 /// A `VClock` is a standard vector clock.
@@ -56,10 +58,14 @@ impl<A: Ord> PartialOrd for VClock<A> {
 
         if self == other {
             Some(Ordering::Equal)
-        } else if other.dots.iter().all(|(w, c)| self.get(w) >= *c) {
-            Some(Ordering::Greater)
-        } else if self.dots.iter().all(|(w, c)| other.get(w) >= *c) {
+        } else if other.dots.values().sum::<BigUint>() > self.dots.values().sum() {
             Some(Ordering::Less)
+        } else if self.dots.values().sum::<BigUint>() > other.dots.values().sum() {
+            Some(Ordering::Greater)
+        } else if other.len() > self.len() {
+            Some(Ordering::Less)
+        } else if self.len() > other.len() {
+            Some(Ordering::Greater)
         } else {
             None
         }
@@ -147,6 +153,12 @@ impl<A: Ord> VClock<A> {
     /// Returns a new `VClock` instance.
     pub fn new() -> Self {
         Default::default()
+    }
+
+    /// Returns the length of the vclocks, i.e. how many actors have
+    /// participated in updating the value
+    pub fn len(&self) -> usize {
+        self.dots.len()
     }
 
     /// Returns a clone of self but with information that is older than given clock is
@@ -354,5 +366,14 @@ impl<A: Ord + Clone + Debug + Arbitrary> Arbitrary for VClock<A> {
         }
 
         Box::new(shrunk_clocks.into_iter())
+    }
+}
+
+impl<A: Ord + AsRef<[u8]>> Sha3Hash for VClock<A> {
+    fn hash(&self, hasher: &mut Sha3) {
+        self.dots.iter().for_each(|(k, v)| {
+            hasher.update(k.as_ref());
+            hasher.update(&v.to_be_bytes());
+        });
     }
 }

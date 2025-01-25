@@ -216,7 +216,7 @@ impl<V, A: Ord + Clone + Debug> MVReg<V, A> {
     }
 
     /// A clock with latest versions of all actors operating on this register
-    fn clock(&self) -> VClock<A> {
+    pub fn clock(&self) -> VClock<A> {
         self.vals
             .iter()
             .fold(VClock::new(), |mut accum_clock, (c, _)| {
