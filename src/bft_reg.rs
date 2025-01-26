@@ -193,11 +193,12 @@ impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String>
     type Validation = ValidationError;
 
     fn validate_op(&self, op: &Self::Op) -> Result<(), Self::Validation> {
-        
-        if self.dag.contains_key(&op.hash) || self.orphans.contains_key(&op.hash) {
+        if self.dag.contains_key(&op.hash) {
             return Err(ValidationError::AlreadySeen);
         }
-
+        if self.is_orphaned(&op.hash) {
+            return Err(ValidationError::AlreadySeen);
+        }
         // Recover and Validate the signature
         let mut hasher = Sha3::v256();
         op.op.hash(&mut hasher);
@@ -214,10 +215,6 @@ impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String>
         ).map_err(|_| ValidationError::InvalidSignature)?; 
         let address = hex::encode(Address::from_public_key(&verifying_key));
 
-        if self.val.is_none() {
-            return Ok(())
-        }
-
         for child in &op.op.children {
             if !self.dag.contains_key(child) {
                 return Err(ValidationError::MissingChild(*child))
@@ -233,12 +230,12 @@ impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String>
             }
         }
 
-        if self.val.clone().unwrap().op.op.vclock > op.op.vclock {
-            return Err(ValidationError::InvalidVClock);
+        if self.val.is_none() {
+            return Ok(())
         }
 
-        if let Some(head) = self.get_heads().iter().find(|head| !op.op.children.contains(*head)) {
-            return Err(ValidationError::MissingHead(*head));
+        if self.val.clone().unwrap().op.op.vclock > op.op.vclock {
+            return Err(ValidationError::InvalidVClock);
         }
 
         Ok(()) 
@@ -249,31 +246,29 @@ impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String>
             Ok(()) => {
                 let hash = op.hash;
                 let node = Node::new(op.clone(), op.op.value.clone());
+                self.dag.insert(node.op.hash, node.clone());
                 if self.val.is_none() {
-                    self.val = Some(node);
+                    self.val = Some(node.clone());
+                    self.resolve_orphans(&hash);
                     self.update_heads();
                     return;
                 }
                 // If the new op contains the current val as a child
                 // set new op to current val
                 if op.op.children.contains(&self.val.clone().unwrap().op.hash) {
-                    self.dag.insert(self.val.clone().unwrap().op.hash, self.val.clone().unwrap().clone());
                     self.val = Some(node.clone());
                 } else {
                     // Otherwise, check if the op has an explicitly higher vclock
                     if op.op.vclock > self.val.clone().unwrap().op.op.vclock {
                         // If so set current val to new op
-                        self.dag.insert(self.val.clone().unwrap().op.hash, self.val.clone().unwrap());
                         self.val = Some(node.clone());
                     // Otherwise, check if the op's hash is lower than current val hash
                     } else if op.hash < self.val.clone().unwrap().op.hash {
-                        self.dag.insert(self.val.clone().unwrap().op.hash, self.val.clone().unwrap());
                         // If so, set current val to new op
                         self.val = Some(node.clone());
                         // Move current val into DAG as a head
                     } else {
-                        // Otherwise move the new op into the dag as a head
-                        self.dag.insert(op.hash, node.clone());
+                        println!("Self.val has equal or higher vclock and lower hash, leaving as current val and moving new node into dag\n");
                     }
                 }
 
@@ -331,7 +326,7 @@ impl<T: Clone + Sha3Hash + PartialEq> BFTReg<T, String> {
 
     /// Checks if the update was orphaned
     pub fn is_orphaned(&self, key: &Hash) -> bool {
-        self.orphans.contains_key(key)
+        self.orphans.iter().any(|(_, v)| v.iter().any(|op| op.hash == *key))
     }
 
     /// CHecks if the update was accepted as a head
@@ -414,7 +409,6 @@ impl<T: Clone + Sha3Hash + PartialEq> BFTReg<T, String> {
         if let Some(orphan_ops) = self.orphans.remove(hash) {
             progress = orphan_ops.iter().any(|v| self.resolve_orphan(v));
         }
-
         progress
     }
 
@@ -465,15 +459,16 @@ impl<T: Clone + Sha3Hash + PartialEq> BFTReg<T, String> {
             if !self.dag.contains_key(child) {
                 self.orphans.entry(*child)
                     .or_insert_with(Vec::new)
-                    .push(op.clone())
-            } 
+                    .push(op.clone());
+            }     
         }
     }
 
     fn get_heads(&self) -> Vec<Hash> {
         let referenced_children: BTreeSet<Hash> = self.dag.values().flat_map(|op| op.op.op.children.iter().cloned()).collect();
-        self.dag.keys().filter(|hash| !referenced_children.contains(*hash))
-            .cloned().collect()
+        let heads: Vec<Hash> = self.dag.keys().filter(|hash| !referenced_children.contains(*hash))
+            .cloned().collect();
+        heads
     }
 
     fn update_heads(&mut self) {
@@ -490,5 +485,210 @@ impl<T: Sha3Hash, A: Ord + AsRef<[u8]> + Actor> Sha3Hash for Op<T, A> {
         self.children.iter().for_each(|child| child.hash(hasher));
         self.value.hash(hasher);
         self.vclock.hash(hasher);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use k256::ecdsa::SigningKey;
+    use tiny_keccak::{Hasher, Sha3};
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    struct TestValue {
+        id: String,
+        data: String,
+    }
+
+    impl Sha3Hash for TestValue {
+        fn hash(&self, hasher: &mut Sha3) {
+            hasher.update(self.id.as_bytes());
+            hasher.update(self.data.as_bytes());
+        }
+    }
+
+    #[test]
+    fn test_bft_reg_create_initial_update() {
+        let actor = "node-1".to_string();
+        let pk = SigningKey::random(&mut rand::thread_rng());
+        let reg: BFTReg<TestValue, String> = BFTReg::default();
+
+        let value = TestValue {
+            id: "value-1".to_string(),
+            data: "Initial data".to_string(),
+        };
+
+        // Create an initial update
+        let update = reg
+            .update(value.clone(), actor.clone(), pk.clone())
+            .expect("Failed to create initial update");
+
+        // Verify the update structure
+        assert_eq!(update.op.value, value);
+        assert!(update.op.children.is_empty()); // No children for the first update
+    }
+
+    #[test]
+    fn test_bft_reg_create_update_with_children() {
+        let actor = "node-1".to_string();
+        let pk = SigningKey::random(&mut rand::thread_rng());
+        let mut reg: BFTReg<TestValue, String> = BFTReg::default();
+
+        let value1 = TestValue {
+            id: "value-1".to_string(),
+            data: "Initial data".to_string(),
+        };
+
+        // Create and apply the first update
+        let update1 = reg
+            .update(value1.clone(), actor.clone(), pk.clone())
+            .expect("Failed to create first update");
+        reg.apply(update1.clone());
+
+        let value2 = TestValue {
+            id: "value-2".to_string(),
+            data: "Updated data".to_string(),
+        };
+
+        // Create a second update referencing the first
+        let update2 = reg
+            .update(value2.clone(), actor.clone(), pk.clone())
+            .expect("Failed to create second update");
+
+        // Verify that the second update references the first as a child
+        assert!(update2.op.children.contains(&update1.hash));
+    }
+
+    #[test]
+    fn test_bft_reg_apply_update() {
+        let actor = "node-1".to_string();
+        let pk = SigningKey::random(&mut rand::thread_rng());
+        let mut reg: BFTReg<TestValue, String> = BFTReg::default();
+
+        let value1 = TestValue {
+            id: "value-1".to_string(),
+            data: "Initial data".to_string(),
+        };
+
+        // Create and apply the first update
+        let update1 = reg
+            .update(value1.clone(), actor.clone(), pk.clone())
+            .expect("Failed to create first update");
+        reg.apply(update1.clone());
+
+        // Validate the canonical value
+        assert!(reg.is_val(&value1));
+    }
+
+    #[test]
+    fn test_bft_reg_orphan_handling() {
+        let actor = "node-1".to_string();
+        let pk = SigningKey::random(&mut rand::thread_rng());
+        let mut reg: BFTReg<TestValue, String> = BFTReg::default();
+
+        let value1 = TestValue {
+            id: "value-1".to_string(),
+            data: "Initial data".to_string(),
+        };
+
+        // Create the first update but do not apply it
+        let update1 = reg
+            .update(value1.clone(), actor.clone(), pk.clone())
+            .expect("Failed to create first update");
+
+        let value2 = TestValue {
+            id: "value-2".to_string(),
+            data: "Orphaned data".to_string(),
+        };
+
+        // Create a second update referencing the first
+        let mut children = BTreeSet::new();
+        children.insert(update1.hash);
+
+        let op = Op {
+            value: value2.clone(),
+            vclock: VClock::new(),
+            children,
+        };
+
+        let mut hasher = Sha3::v256();
+        op.hash(&mut hasher);
+        let mut hash = [0u8; 32];
+        hasher.finalize(&mut hash);
+
+        let (sig, rec) = pk.sign_prehash_recoverable(&hash).unwrap();
+        let signature = RecoverableSignature {
+            sig: hex::encode(sig.to_vec()),
+            rec: rec.to_byte(),
+        };
+
+        let update2 = Update {
+            op,
+            signature,
+            hash,
+        };
+
+        // Apply the orphaned update
+        println!("Applying update 2 before update 1");
+        reg.apply(update2.clone());
+
+        // Ensure it was stored as an orphan
+        assert!(reg.is_orphaned(&update2.hash));
+        assert!(reg.orphans.contains_key(&update1.hash));
+        println!("Update 2 is orphaned by update 1");
+
+        // Apply the first update to resolve the orphan
+        println!("Applying update 1...");
+        reg.apply(update1.clone());
+
+        println!("Update 1 should no longer be orphaned...");
+        // Ensure the orphan was resolved
+        assert!(!reg.is_orphaned(&update1.hash));
+        assert!(reg.is_val(&value2));
+    }
+
+    #[test]
+    fn test_bft_reg_concurrent_updates() {
+        let actor = "node-1".to_string();
+        let pk = SigningKey::random(&mut rand::thread_rng());
+        let mut reg: BFTReg<TestValue, String> = BFTReg::default();
+
+        let value1 = TestValue {
+            id: "value-1".to_string(),
+            data: "Initial data".to_string(),
+        };
+
+        // Create and apply the first update
+        let update1 = reg
+            .update(value1.clone(), actor.clone(), pk.clone())
+            .expect("Failed to create first update");
+        reg.apply(update1.clone());
+
+        let value2 = TestValue {
+            id: "value-2".to_string(),
+            data: "Concurrent data 1".to_string(),
+        };
+
+        let value3 = TestValue {
+            id: "value-3".to_string(),
+            data: "Concurrent data 2".to_string(),
+        };
+
+        // Create two concurrent updates
+        let update2 = reg
+            .update(value2.clone(), actor.clone(), pk.clone())
+            .expect("Failed to create second update");
+        let update3 = reg
+            .update(value3.clone(), actor.clone(), pk.clone())
+            .expect("Failed to create third update");
+
+        // Apply both updates
+        reg.apply(update2.clone());
+        reg.apply(update3.clone());
+
+        // Ensure both updates are considered heads
+        assert!(reg.is_head(&update2.hash));
+        assert!(reg.is_head(&update3.hash));
     }
 }
