@@ -72,6 +72,12 @@ pub mod list;
 /// This module contains a Byzantine Fault Tolerant Single Value Register
 pub mod bft_reg;
 
+/// This module contains a Byzantine Fault Tolerant Single Queue 
+pub mod bft_queue;
+
+/// This module contains a Byzantine Fault Tolerant Multi-Topic Queue 
+pub mod bft_topic_queue;
+
 mod serde_helper;
 
 #[cfg(feature = "num")]
@@ -86,10 +92,8 @@ pub use {
 /// Top-level re-exports for CRDT structures.
 pub use crate::{
     dot::Dot, dot::DotRange, dot::OrdDot, gset::GSet, lwwreg::LWWReg, map::Map, mvreg::MVReg,
-    orswot::Orswot, vclock::VClock, bft_reg::BFTReg
+    orswot::Orswot, vclock::VClock, bft_reg::BFTReg, bft_queue::BFTQueue
 };
-
-pub use bft_reg::*;
 
 /// A re-export of the quickcheck crate for external property tests
 #[cfg(feature = "quickcheck")]

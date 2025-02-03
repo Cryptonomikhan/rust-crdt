@@ -35,8 +35,10 @@ impl std::error::Error for ValidationError {}
 /// A wrapper around a secp256k1 Signature and it's recovery ID
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RecoverableSignature {
-    sig: String,
-    rec: u8
+    /// The hexidecimal representation of the signature
+    pub sig: String,
+    /// Single byte recovery ID 
+    pub rec: u8
 }
 
 /// An operation for a byzantine fault tolerant register
