@@ -67,8 +67,14 @@ impl<A: Ord> PartialOrd for VClock<A> {
         } else if self.len() > other.len() {
             Some(Ordering::Greater)
         } else {
-            None
+            Some(Ordering::Equal)
         }
+    }
+}
+
+impl<A: Ord> Ord for VClock<A> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
     }
 }
 
