@@ -22,13 +22,12 @@ impl<T: Clone + Debug + Sha3Hash + Ord + Default> TopicQueue<T> {
         &self,
         topic: Hash,
         content: T,
-        deps: BTreeSet<Hash>,
         actor: String,
         pk: SigningKey
     ) -> Result<Op<Hash, BFTQueue<T>, String>, Box<dyn std::error::Error>> {
         let add_ctx = self.topics.read_ctx().derive_add_ctx(actor.clone());
         let op = self.topics.update(topic, add_ctx, |q, _ctx| {
-            let signed_message = q.enqueue(content, deps, actor, pk);
+            let signed_message = q.enqueue(content, actor, pk);
             signed_message
         });
 
@@ -125,7 +124,6 @@ mod tests {
         let op = queue.enqueue(
             topic1,
             msg1.clone(),
-            BTreeSet::new(),
             actor.clone(),
             pk.clone()
         ).expect("Failed to create enqueue operation");
@@ -152,11 +150,11 @@ mod tests {
         let msg2 = create_test_message("msg2", b"Message for topic 2");
         
         // Add messages to different topics
-        let op1 = queue.enqueue(topic1, msg1.clone(), BTreeSet::new(), actor.clone(), pk.clone())
+        let op1 = queue.enqueue(topic1, msg1.clone(), actor.clone(), pk.clone())
             .expect("Failed to create first enqueue operation");
         queue.apply(op1);
 
-        let op2 = queue.enqueue(topic2, msg2.clone(), BTreeSet::new(), actor.clone(), pk.clone())
+        let op2 = queue.enqueue(topic2, msg2.clone(), actor.clone(), pk.clone())
             .expect("Failed to create second enqueue operation");
         queue.apply(op2);
         
@@ -189,9 +187,9 @@ mod tests {
         let msg1 = create_test_message("msg1", b"Message from actor 1");
         let msg2 = create_test_message("msg2", b"Message from actor 2");
         
-        let op1 = queue1.enqueue(topic, msg1.clone(), BTreeSet::new(), actor1.clone(), pk1)
+        let op1 = queue1.enqueue(topic, msg1.clone(), actor1.clone(), pk1)
             .expect("Failed to create first message");
-        let op2 = queue2.enqueue(topic, msg2.clone(), BTreeSet::new(), actor2.clone(), pk2)
+        let op2 = queue2.enqueue(topic, msg2.clone(), actor2.clone(), pk2)
             .expect("Failed to create second message");
         
         // Apply operations in different orders
@@ -230,7 +228,7 @@ mod tests {
         let msg1 = create_test_message("msg1", b"First message");
         
         // Add first message
-        let op1 = queue.enqueue(topic, msg1.clone(), BTreeSet::new(), actor.clone(), pk.clone())
+        let op1 = queue.enqueue(topic, msg1.clone(), actor.clone(), pk.clone())
             .expect("Failed to create first message");
         // Apply first message 
         queue.apply(op1.clone());
@@ -250,7 +248,7 @@ mod tests {
         
         // Create second message 
         let msg2 = create_test_message("msg2", b"Dependent message");
-        let op2 = queue.enqueue(topic, msg2.clone(), deps, actor, pk)
+        let op2 = queue.enqueue(topic, msg2.clone(), actor, pk)
             .expect("Failed to create dependent message");
         
         // Apply second message 
