@@ -58,7 +58,7 @@ pub struct SignedMessage<T: Sha3Hash> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BFTQueue<T: Sha3Hash> {
     /// Messages in the queue, keyed by their hash
-    messages: BTreeMap<Hash, Message<T>>,
+    pub messages: BTreeMap<Hash, Message<T>>,
     /// The current vector clock of the queue
     clock: VClock<String>,
 }
