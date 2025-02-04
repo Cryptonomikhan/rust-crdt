@@ -1,12 +1,13 @@
 use crate::{map::Op, merkle_reg::{Hash, Sha3Hash}, BFTQueue, CmRDT, CvRDT, Map};
-use std::{collections::BTreeSet, fmt::Debug};
+use std::fmt::Debug;
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
 
 /// A multi-topic BFT Message Queue
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TopicQueue<T: Clone + Debug + Sha3Hash + Default> {
-    topics: Map<Hash, BFTQueue<T>, String>
+    /// The topic -> Queue map.
+    pub topics: Map<Hash, BFTQueue<T>, String>
 }
 
 impl<T: Clone + Debug + Sha3Hash + Ord + Default> TopicQueue<T> {
