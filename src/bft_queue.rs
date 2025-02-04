@@ -1,7 +1,7 @@
 use crate::bft_reg::RecoverableSignature;
 use crate::merkle_reg::Sha3Hash;
 use crate::{CmRDT, CvRDT, ResetRemove, VClock};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use alloy_primitives::Address;
 use serde::{Deserialize, Serialize};
@@ -41,8 +41,6 @@ pub struct Message<T: Sha3Hash> {
     pub content: T,
     /// Vector clock representing causal history
     pub vclock: VClock<String>,
-    /// Optional dependencies (hashes of messages this one depends on)
-    pub deps: BTreeSet<Hash>,
 }
 
 /// A signed message update operation
@@ -61,8 +59,6 @@ pub struct SignedMessage<T: Sha3Hash> {
 pub struct BFTQueue<T: Sha3Hash> {
     /// Messages in the queue, keyed by their hash
     messages: BTreeMap<Hash, Message<T>>,
-    /// Messages that can't be added yet due to missing dependencies
-    orphans: BTreeMap<Hash, Vec<SignedMessage<T>>>,
     /// The current vector clock of the queue
     clock: VClock<String>,
 }
@@ -72,7 +68,6 @@ impl<T: Sha3Hash> BFTQueue<T> {
     pub fn new() -> Self {
         Self {
             messages: BTreeMap::new(),
-            orphans: BTreeMap::new(),
             clock: VClock::new(),
         }
     }
@@ -81,7 +76,6 @@ impl<T: Sha3Hash> BFTQueue<T> {
     pub fn enqueue(
         &self,
         content: T,
-        deps: BTreeSet<Hash>,
         actor: String,
         pk: SigningKey,
     ) -> SignedMessage<T> {
@@ -93,7 +87,6 @@ impl<T: Sha3Hash> BFTQueue<T> {
         let message = Message {
             content,
             vclock,
-            deps,
         };
 
         // Hash and sign the message
@@ -182,7 +175,7 @@ impl<T: Clone + Debug + Sha3Hash> CmRDT for BFTQueue<T> {
         let recovery_id = RecoveryId::from_byte(op.signature.rec)
             .ok_or(ValidationError::InvalidSignature)?;
         
-        let address = match VerifyingKey::recover_from_prehash(&hash, &signature, recovery_id) {
+        let _address = match VerifyingKey::recover_from_prehash(&hash, &signature, recovery_id) {
             Ok(vk) => {
                 hex::encode(Address::from_public_key(&vk))
             }
@@ -191,26 +184,6 @@ impl<T: Clone + Debug + Sha3Hash> CmRDT for BFTQueue<T> {
                 return Err(ValidationError::InvalidSignature);
             }
         };
-
-        // Check that all dependencies exist
-        for dep in &op.message.deps {
-            if !self.messages.contains_key(dep) {
-                eprintln!("Local dag is missing a child in the message: {dep:?}");
-                return Err(ValidationError::MissingChild(*dep));
-            }
-            
-            // Verify the dependency's vclock is less than this message's vclock
-            let dep_msg = self.messages.get(dep).unwrap();
-            if dep_msg.vclock > op.message.vclock {
-                eprintln!("Dependency Message VClock is strictly greater than operation message VClock, meaning VClock is invalid: {:?} > {:?}", dep_msg.vclock, op.message.vclock);
-                return Err(ValidationError::InvalidVClock);
-            }
-
-            if dep_msg.vclock.get(&address) >= op.message.vclock.get(&address) {
-                eprintln!("Dependency Message Vclock for actor is greater than or equal to op message vclock for actor, which means vclock did not increment for new op: {} >= {}", dep_msg.vclock.get(&address), op.message.vclock.get(&address));
-                return Err(ValidationError::InvalidVClock)
-            }
-        }
 
         Ok(())
     }
@@ -223,19 +196,6 @@ impl<T: Clone + Debug + Sha3Hash> CmRDT for BFTQueue<T> {
                 self.messages.insert(hash, op.message.clone());
                 self.clock.merge(op.message.vclock.clone());
                 
-                // Try to resolve any orphaned messages that depend on this one
-                if let Some(orphans) = self.orphans.remove(&hash) {
-                    for orphan in orphans {
-                        self.apply(orphan);
-                    }
-                }
-            },
-            Err(ValidationError::MissingChild(dep)) => {
-                eprintln!("Op is missing child, adding to orphans");
-                // Store as orphan until we receive the dependency
-                self.orphans.entry(dep)
-                    .or_default()
-                    .push(op);
             },
             Err(e) => {
                 eprintln!("Op is invalid: {e}, ignoring");
@@ -291,27 +251,8 @@ impl<T: Clone + Debug + Sha3Hash>  CvRDT for BFTQueue<T> {
             }
         }
 
-        // Merge orphans
-        let other_orphans = std::mem::take(&mut other.orphans);
-        for (missing_hash, orphan_msgs) in other_orphans {
-            let entry = self.orphans.entry(missing_hash).or_default();
-            entry.extend(orphan_msgs);
-        }
-
         // Merge clocks
         self.clock.merge(other.clock);
-
-        // Try to resolve orphans after merge
-        let orphan_hashes: Vec<_> = self.orphans.keys().cloned().collect();
-        for hash in orphan_hashes {
-            if self.messages.contains_key(&hash) {
-                if let Some(orphans) = self.orphans.remove(&hash) {
-                    for orphan in orphans {
-                        self.apply(orphan);
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -323,11 +264,6 @@ impl<T: Clone + Sha3Hash> Default for BFTQueue<T> {
 
 impl<T: Sha3Hash> Sha3Hash for Message<T> {
     fn hash(&self, hasher: &mut Sha3) {
-        // Hash dependencies in sorted order for determinism
-        for dep in &self.deps {
-            hasher.update(dep);
-        }
-        
         // Hash the vector clock
         Sha3Hash::hash(&self.vclock, hasher);
         
@@ -351,22 +287,6 @@ impl<T: Clone + Sha3Hash> ResetRemove<String> for BFTQueue<T> {
             })
             .collect();
 
-        // Clean up orphans where the missing dependency's clock is dominated
-        self.orphans = std::mem::take(&mut self.orphans)
-            .into_iter()
-            .filter_map(|(hash, orphan_msgs)| {
-                if let Some(msg) = self.messages.get(&hash) {
-                    if msg.vclock.is_empty() {
-                        None // the dependency was reset-removed, so we can drop these orphans
-                    } else {
-                        Some((hash, orphan_msgs))
-                    }
-                } else {
-                    Some((hash, orphan_msgs)) // keep orphans whose deps we haven't seen
-                }
-            })
-            .collect();
-
         // Update the queue's clock
         self.clock.reset_remove(clock);
     }
@@ -377,7 +297,6 @@ impl<T: Sha3Hash + Default> Default for Message<T> {
         Message {
             content: T::default(),
             vclock: VClock::new(),
-            deps: BTreeSet::new()
         }
     }
 }
@@ -419,7 +338,7 @@ mod tests {
         // Create and enqueue initial message
         let msg1 = create_test_message("msg1", b"First message");
         let update1 = queue
-            .enqueue(msg1.clone(), BTreeSet::new(), actor.clone(), pk.clone());
+            .enqueue(msg1.clone(), actor.clone(), pk.clone());
 
         // Apply the message and verify it's in the queue
         let mut queue_with_msg = queue.clone();
@@ -441,7 +360,7 @@ mod tests {
         // First message from actor1
         let msg1 = create_test_message("msg1", b"First message");
         let update1 = queue
-            .enqueue(msg1.clone(), BTreeSet::new(), actor1.clone(), pk1);
+            .enqueue(msg1.clone(), actor1.clone(), pk1);
         
         queue.apply(update1.clone());
 
@@ -451,7 +370,7 @@ mod tests {
         
         let msg2 = create_test_message("msg2", b"Second message");
         let update2 = queue
-            .enqueue(msg2.clone(), deps, actor2.clone(), pk2);
+            .enqueue(msg2.clone(), actor2.clone(), pk2);
         
         queue.apply(update2);
 
@@ -482,10 +401,10 @@ mod tests {
         let msg2 = create_test_message("msg2", b"Message from actor 2");
 
         let update1 = queue1
-            .enqueue(msg1.clone(), BTreeSet::new(), actor1.clone(), pk1);
+            .enqueue(msg1.clone(), actor1.clone(), pk1);
         
         let update2 = queue2
-            .enqueue(msg2.clone(), BTreeSet::new(), actor2.clone(), pk2);
+            .enqueue(msg2.clone(), actor2.clone(), pk2);
 
         // Apply updates to both queues in different orders
         queue1.apply(update1.clone());
@@ -522,7 +441,7 @@ mod tests {
         // Actor 1 creates and applies first message
         let msg1 = create_test_message("msg1", b"First message");
         let update1 = queue1
-            .enqueue(msg1.clone(), BTreeSet::new(), actor1.clone(), pk1.clone());
+            .enqueue(msg1.clone(), actor1.clone(), pk1.clone());
         queue1.apply(update1.clone());
 
         // Actor 1 creates second message (with properly incremented vclock)
@@ -530,7 +449,7 @@ mod tests {
         deps.insert(update1.hash);
         let msg2 = create_test_message("msg2", b"Second message");
         let update2 = queue1
-            .enqueue(msg2.clone(), deps, actor1.clone(), pk1.clone());
+            .enqueue(msg2.clone(), actor1.clone(), pk1.clone());
         queue1.apply(update2.clone());
 
         // Now Actor 2 receives these messages out of order
@@ -556,7 +475,7 @@ mod tests {
         // Add a message
         let msg = create_test_message("msg1", b"Test message");
         let update = queue
-            .enqueue(msg.clone(), BTreeSet::new(), actor.clone(), pk.clone());
+            .enqueue(msg.clone(), actor.clone(), pk.clone());
 
         queue.apply(update);
         assert_eq!(queue.read().len(), 1);
@@ -581,7 +500,7 @@ mod tests {
         // Create a valid message
         let msg = create_test_message("msg1", b"Test message");
         let mut update = queue
-            .enqueue(msg.clone(), BTreeSet::new(), actor.clone(), pk1);
+            .enqueue(msg.clone(), actor.clone(), pk1);
 
         // Modify the signature using a different key
         let (_sig, rec) = pk2.sign_prehash_recoverable(&update.hash).unwrap();
