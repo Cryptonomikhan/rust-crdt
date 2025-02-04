@@ -364,6 +364,16 @@ impl<T: Clone + Sha3Hash> ResetRemove<String> for BFTQueue<T> {
     }
 }
 
+impl<T: Sha3Hash + Default> Default for Message<T> {
+    fn default() -> Self {
+        Message {
+            content: T::default(),
+            vclock: VClock::new(),
+            deps: BTreeSet::new()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
