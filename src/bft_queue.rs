@@ -146,6 +146,11 @@ impl<T: Sha3Hash> BFTQueue<T> {
             .filter(|msg| msg.vclock > *after)
             .collect()
     }
+
+    /// See if the queue contains a message
+    pub fn contains(&self, hash: Hash) -> bool {
+        self.messages.contains_key(&hash)
+    }
 }
 
 impl<T: Clone + Debug + Sha3Hash> CmRDT for BFTQueue<T> {
