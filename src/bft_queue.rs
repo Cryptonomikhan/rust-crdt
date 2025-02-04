@@ -37,6 +37,7 @@ impl std::error::Error for ValidationError {}
 /// A message in the queue with its associated metadata
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub struct Message<T: Sha3Hash> {
+    pub id: Hash,
     /// The actual message content
     pub content: T,
     /// Vector clock representing causal history
