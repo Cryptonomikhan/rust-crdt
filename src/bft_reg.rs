@@ -227,7 +227,7 @@ impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String>
             if child_op.op.op.vclock > op.op.vclock {
                 return Err(ValidationError::InvalidVClock)
             }
-            if child_op.op.op.vclock.get(&address) > op.op.vclock.get(&address) {
+            if child_op.op.op.vclock.get(&address) >= op.op.vclock.get(&address) {
                 return Err(ValidationError::InvalidVClock)
             }
         }
