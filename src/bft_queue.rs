@@ -48,9 +48,12 @@ pub struct Message<T: Sha3Hash> {
 /// A signed message update operation
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedMessage<T: Sha3Hash> {
-    message: Message<T>,
-    signature: RecoverableSignature,
-    hash: Hash,
+    /// The underlying content
+    pub message: Message<T>,
+    /// The recoverable signature 
+    pub signature: RecoverableSignature,
+    /// The hash id of the message 
+    pub hash: Hash,
 }
 
 /// A Byzantine Fault Tolerant Message Queue
