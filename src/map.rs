@@ -162,7 +162,7 @@ impl<K: Debug, V: CvRDT + Debug, A: Debug> Display for CvRDTValidation<K, V, A> 
 
 impl<K: Debug, V: CvRDT + Debug, A: Debug> std::error::Error for CvRDTValidation<K, V, A> {}
 
-impl<K: Ord, V: Val<A> + Debug, A: Ord + Hash + Clone + Debug> CmRDT for Map<K, V, A> {
+impl<K: Clone + Ord + Debug, V: Val<A> + Debug, A: Ord + Hash + Clone + Debug> CmRDT for Map<K, V, A> {
     type Op = Op<K, V, A>;
     type Validation = CmRDTValidation<V, A>;
 
@@ -192,10 +192,13 @@ impl<K: Ord, V: Val<A> + Debug, A: Ord + Hash + Clone + Debug> CmRDT for Map<K, 
                     return;
                 }
 
-                let entry = self.entries.entry(key).or_default();
+                println!("Checking for entry for {key:?} \n\n");
+                let entry = self.entries.entry(key.clone()).or_default();
+                println!("entry for {key:?}: {entry:?}\n\n");
 
                 entry.clock.apply(dot.clone());
                 entry.val.apply(op);
+                println!("Applied op for entry for {key:?}: {entry:?}\n\n");
 
                 self.clock.apply(dot);
                 self.apply_deferred();

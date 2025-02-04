@@ -35,8 +35,10 @@ impl std::error::Error for ValidationError {}
 /// A wrapper around a secp256k1 Signature and it's recovery ID
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RecoverableSignature {
-    sig: String,
-    rec: u8
+    /// The hexidecimal representation of the signature
+    pub sig: String,
+    /// Single byte recovery ID 
+    pub rec: u8
 }
 
 /// An operation for a byzantine fault tolerant register
@@ -225,7 +227,7 @@ impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String>
             if child_op.op.op.vclock > op.op.vclock {
                 return Err(ValidationError::InvalidVClock)
             }
-            if child_op.op.op.vclock.get(&address) > op.op.vclock.get(&address) {
+            if child_op.op.op.vclock.get(&address) >= op.op.vclock.get(&address) {
                 return Err(ValidationError::InvalidVClock)
             }
         }
