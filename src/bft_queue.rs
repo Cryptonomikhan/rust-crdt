@@ -175,7 +175,7 @@ impl<T: Clone + Debug + Sha3Hash> CmRDT for BFTQueue<T> {
         let recovery_id = RecoveryId::from_byte(op.signature.rec)
             .ok_or(ValidationError::InvalidSignature)?;
         
-        let _address = match VerifyingKey::recover_from_prehash(&hash, &signature, recovery_id) {
+        let _address = match VerifyingKey::recover_from_msg(&hash, &signature, recovery_id) {
             Ok(vk) => {
                 hex::encode(Address::from_public_key(&vk))
             }
@@ -265,7 +265,7 @@ impl<T: Clone + Sha3Hash> Default for BFTQueue<T> {
 impl<T: Sha3Hash> Sha3Hash for Message<T> {
     fn hash(&self, hasher: &mut Sha3) {
         // Hash the vector clock
-        Sha3Hash::hash(&self.vclock, hasher);
+        // Sha3Hash::hash(&self.vclock, hasher);
         
         // Hash the content if it implements AsRef<[u8]>
         self.content.hash(hasher);
