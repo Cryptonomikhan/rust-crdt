@@ -187,19 +187,19 @@ impl<K: Clone + Ord + Debug, V: Val<A> + Debug, A: Ord + Hash + Clone + Debug> C
         match op {
             Op::Rm { clock, keyset } => self.apply_keyset_rm(keyset, clock),
             Op::Up { dot, key, op } => {
+                log::info!("Existing dot: {}, op dot: {}", self.clock.get(&dot.actor), dot.counter);
                 if self.clock.get(&dot.actor) >= dot.counter {
                     // we've seen this op already
+                    log::info!("Op has already been seen");
                     return;
                 }
 
                 println!("Checking for entry for {key:?} \n\n");
                 let entry = self.entries.entry(key.clone()).or_default();
-                println!("entry for {key:?}: {entry:?}\n\n");
+                println!("entry for {:?}\n\n", key);
 
                 entry.clock.apply(dot.clone());
                 entry.val.apply(op);
-                println!("Applied op for entry for {key:?}: {entry:?}\n\n");
-
                 self.clock.apply(dot);
                 self.apply_deferred();
             }

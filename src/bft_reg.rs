@@ -189,13 +189,15 @@ impl<T, A: Ord + std::hash::Hash + Clone + AsRef<[u8]>> ResetRemove<A> for BFTRe
     }
 }
 
-impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String> 
+impl<T: Clone + Sha3Hash + PartialEq + Debug> CmRDT for BFTReg<T, String> 
 {
     type Op = Update<T, String>;
     type Validation = ValidationError;
 
     fn validate_op(&self, op: &Self::Op) -> Result<(), Self::Validation> {
+        log::info!("Attempting to apply op: {:?}", op);
         if self.dag.contains_key(&op.hash) {
+            log::info!("Dag contains key, returning invalid");
             return Err(ValidationError::AlreadySeen);
         }
         if self.is_orphaned(&op.hash) {
@@ -212,7 +214,7 @@ impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String>
 
         let sig_bytes = hex::decode(op.signature.sig.clone()).map_err(|_| ValidationError::InvalidSignature)?;
         let signature = K256Signature::from_slice(&sig_bytes).map_err(|_| ValidationError::InvalidSignature)?;
-        let verifying_key = VerifyingKey::recover_from_prehash(
+        let verifying_key = VerifyingKey::recover_from_msg(
             &hash, &signature, RecoveryId::from_byte(op.signature.rec).ok_or(ValidationError::InvalidSignature)?
         ).map_err(|_| ValidationError::InvalidSignature)?; 
         let address = hex::encode(Address::from_public_key(&verifying_key));
@@ -225,9 +227,13 @@ impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String>
             // We can guarantee that child exists, given early exit above
             let child_op = self.dag.get(child).unwrap();
             if child_op.op.op.vclock > op.op.vclock {
+                log::error!("Child op vclock strictly greater than op vclock");
                 return Err(ValidationError::InvalidVClock)
             }
-            if child_op.op.op.vclock.get(&address) >= op.op.vclock.get(&address) {
+            if child_op.op.op.vclock.get(&address) > op.op.vclock.get(&address) {
+                log::error!("Child op actors vclock greater than or equal to op vclock");
+                log::error!("Child op: {:?}\n\n", child_op);
+                log::error!("New op: {:?}", child_op);
                 return Err(ValidationError::InvalidVClock)
             }
         }
@@ -278,17 +284,18 @@ impl<T: Clone + Sha3Hash + PartialEq> CmRDT for BFTReg<T, String>
                 self.resolve_orphans(&hash);
                 self.update_heads();
             }
-            Err(ValidationError::MissingChild(_)) => {
+            Err(ValidationError::MissingChild(e)) => {
+                log::error!("Op is missingg a child: {}", hex::encode(e));
                 self.add_orphan(op);
             }
-            Err(_) => {
-                //no-op
+            Err(e) => {
+                log::error!("Op rejected: {e}");
             }
         }
     }
 }
 
-impl<T: Clone + PartialEq + Sha3Hash> CvRDT for BFTReg<T, String> {
+impl<T: Clone + PartialEq + Sha3Hash + Debug> CvRDT for BFTReg<T, String> {
     type Validation = std::io::Error;
     fn validate_merge(&self, _other: &Self) -> Result<(), Self::Validation> {
         Ok(())
@@ -315,7 +322,7 @@ impl<T: Clone + PartialEq + Sha3Hash> CvRDT for BFTReg<T, String> {
     }
 }
 
-impl<T: Clone + Sha3Hash + PartialEq> BFTReg<T, String> {
+impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
     /// Returns the current cannonical value
     pub fn val(&self) -> Option<Node<T, String>> {
         self.val.clone()
@@ -347,21 +354,34 @@ impl<T: Clone + Sha3Hash + PartialEq> BFTReg<T, String> {
     pub fn update(&self, value: T, actor: String, pk: SigningKey) -> Result<Update<T, String>, Box<dyn std::error::Error>> {
         let mut children: BTreeSet<Hash> = BTreeSet::new();
         let vclock = if let Some(val) = &self.val {
+            log::info!("Value is Some");
             children.insert(val.op.hash);
             children.extend(self.get_heads());
+            log::info!("Added heads and current value to children");
             let mut vclock = val.op.op.vclock.clone();
+            log::info!("Acquired VClock... CURRENT VCLOCK: {vclock:?}");
+            let dot = vclock.inc(actor.clone());
+            log::info!("Incremented VClock, applying dot {dot:?}...");
+            vclock.apply(dot);
+            log::info!("Applied dot to vclock: NEW VCLOCK {vclock:?}...");
+            vclock
+        } else {
+            log::info!("Val is none, creating new vclock");
+            let mut vclock = VClock::new();
             let dot = vclock.inc(actor.clone());
             vclock.apply(dot);
             vclock
-        } else {
-            VClock::new()
         };
+
+        log::info!("\n\nVCLOCK: {vclock:?}");
 
         let op = Op {
             value,
             vclock,
             children
         };
+
+        log::info!("Built op, hashing and signing");
 
         let mut hasher = Sha3::v256();
         op.hash(&mut hasher);
@@ -374,6 +394,7 @@ impl<T: Clone + Sha3Hash + PartialEq> BFTReg<T, String> {
             rec: rec.to_byte()
         };
 
+        log::info!("Hashed and signed op, returning update update");
         Ok(Update {
             op,
             signature,
