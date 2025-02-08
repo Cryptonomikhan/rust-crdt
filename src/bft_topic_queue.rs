@@ -1,4 +1,4 @@
-use crate::{map::Op, merkle_reg::{Hash, Sha3Hash}, BFTQueue, CmRDT, CvRDT, Map};
+use crate::{map::Op, merkle_reg::Sha3Hash, BFTQueue, CmRDT, CvRDT, Map};
 use std::fmt::Debug;
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TopicQueue<T: Clone + Debug + Sha3Hash + Default> {
     /// The topic -> Queue map.
-    pub topics: Map<Hash, BFTQueue<T>, String>
+    pub topics: Map<String, BFTQueue<T>, String>
 }
 
 impl<T: Clone + Debug + Sha3Hash + Ord + Default> TopicQueue<T> {
@@ -21,11 +21,11 @@ impl<T: Clone + Debug + Sha3Hash + Ord + Default> TopicQueue<T> {
     /// Enqueue a message to a specific topic
     pub fn enqueue(
         &self,
-        topic: Hash,
+        topic: String,
         content: T,
         actor: String,
         pk: SigningKey
-    ) -> Result<Op<Hash, BFTQueue<T>, String>, Box<dyn std::error::Error>> {
+    ) -> Result<Op<String, BFTQueue<T>, String>, Box<dyn std::error::Error>> {
         let add_ctx = self.topics.read_ctx().derive_add_ctx(actor.clone());
         let op = self.topics.update(topic, add_ctx, |q, _ctx| {
             let signed_message = q.enqueue(content, actor, pk);
@@ -36,14 +36,14 @@ impl<T: Clone + Debug + Sha3Hash + Ord + Default> TopicQueue<T> {
     }
 
     /// Read messages from a specific topic
-    pub fn read_topic(&self, topic: &Hash) -> Option<BFTQueue<T>> {
-        self.topics.get(topic).val
+    pub fn read_topic(&self, topic: &str) -> Option<BFTQueue<T>> {
+        self.topics.get(&topic.to_string()).val
     }
 }
 
 impl<T: Clone + Debug + Sha3Hash + Ord + Default> CmRDT for TopicQueue<T> {
-    type Op = <Map<Hash, BFTQueue<T>, String> as CmRDT>::Op;
-    type Validation = <Map<Hash, BFTQueue<T>, String> as CmRDT>::Validation;
+    type Op = <Map<String, BFTQueue<T>, String> as CmRDT>::Op;
+    type Validation = <Map<String, BFTQueue<T>, String> as CmRDT>::Validation;
 
     fn validate_op(&self, op: &Self::Op) -> Result<(), Self::Validation> {
         self.topics.validate_op(op)
@@ -55,7 +55,7 @@ impl<T: Clone + Debug + Sha3Hash + Ord + Default> CmRDT for TopicQueue<T> {
 }
 
 impl<T: Clone + Debug + Sha3Hash + Ord + Default> CvRDT for TopicQueue<T> {
-    type Validation = <Map<Hash, BFTQueue<T>, String> as CvRDT>::Validation;
+    type Validation = <Map<String, BFTQueue<T>, String> as CvRDT>::Validation;
 
     fn validate_merge(&self, other: &Self) -> Result<(), Self::Validation> {
         self.topics.validate_merge(&other.topics)
@@ -68,6 +68,8 @@ impl<T: Clone + Debug + Sha3Hash + Ord + Default> CvRDT for TopicQueue<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use k256::ecdsa::SigningKey;
     use tiny_keccak::{Hasher, Sha3};
@@ -123,7 +125,7 @@ mod tests {
         
         // Add a message to a topic
         let op = queue.enqueue(
-            topic1,
+            hex::encode(topic1),
             msg1.clone(),
             actor.clone(),
             pk.clone()
@@ -132,7 +134,7 @@ mod tests {
         queue.apply(op);
         
         // Verify the message is in the correct topic
-        let topic_queue = queue.read_topic(&topic1).expect("Topic should exist");
+        let topic_queue = queue.read_topic(&hex::encode(topic1)).expect("Topic should exist");
         let messages = topic_queue.read();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].content, msg1);
@@ -151,17 +153,17 @@ mod tests {
         let msg2 = create_test_message("msg2", b"Message for topic 2");
         
         // Add messages to different topics
-        let op1 = queue.enqueue(topic1, msg1.clone(), actor.clone(), pk.clone())
+        let op1 = queue.enqueue(hex::encode(topic1), msg1.clone(), actor.clone(), pk.clone())
             .expect("Failed to create first enqueue operation");
         queue.apply(op1);
 
-        let op2 = queue.enqueue(topic2, msg2.clone(), actor.clone(), pk.clone())
+        let op2 = queue.enqueue(hex::encode(topic2), msg2.clone(), actor.clone(), pk.clone())
             .expect("Failed to create second enqueue operation");
         queue.apply(op2);
         
         // Verify messages are in correct topics
-        let topic1_queue = queue.read_topic(&topic1).expect("Topic 1 should exist");
-        let topic2_queue = queue.read_topic(&topic2).expect("Topic 2 should exist");
+        let topic1_queue = queue.read_topic(&hex::encode(topic1)).expect("Topic 1 should exist");
+        let topic2_queue = queue.read_topic(&hex::encode(topic2)).expect("Topic 2 should exist");
         
         let messages1 = topic1_queue.read();
         let messages2 = topic2_queue.read();
@@ -188,9 +190,9 @@ mod tests {
         let msg1 = create_test_message("msg1", b"Message from actor 1");
         let msg2 = create_test_message("msg2", b"Message from actor 2");
         
-        let op1 = queue1.enqueue(topic, msg1.clone(), actor1.clone(), pk1)
+        let op1 = queue1.enqueue(hex::encode(topic), msg1.clone(), actor1.clone(), pk1)
             .expect("Failed to create first message");
-        let op2 = queue2.enqueue(topic, msg2.clone(), actor2.clone(), pk2)
+        let op2 = queue2.enqueue(hex::encode(topic), msg2.clone(), actor2.clone(), pk2)
             .expect("Failed to create second message");
         
         // Apply operations in different orders
@@ -203,8 +205,8 @@ mod tests {
         // Verify both queues converged to the same state
         assert_eq!(queue1, queue2);
 
-        let topic_1_queue = queue1.read_topic(&topic).expect("Topic should exist in queue1");
-        let topic_2_queue = queue2.read_topic(&topic).expect("Topic should exist in queue1");
+        let topic_1_queue = queue1.read_topic(&hex::encode(topic)).expect("Topic should exist in queue1");
+        let topic_2_queue = queue2.read_topic(&hex::encode(topic)).expect("Topic should exist in queue1");
         
         let topic1_messages = topic_1_queue.read();
         let topic2_messages = topic_2_queue.read();
@@ -229,13 +231,13 @@ mod tests {
         let msg1 = create_test_message("msg1", b"First message");
         
         // Add first message
-        let op1 = queue.enqueue(topic, msg1.clone(), actor.clone(), pk.clone())
+        let op1 = queue.enqueue(hex::encode(topic), msg1.clone(), actor.clone(), pk.clone())
             .expect("Failed to create first message");
         // Apply first message 
         queue.apply(op1.clone());
         
         // Get the hash of the first message from the queue
-        let topic_queue = queue.read_topic(&topic).expect("Topic should exist");
+        let topic_queue = queue.read_topic(&hex::encode(topic)).expect("Topic should exist");
         let mut hasher = tiny_keccak::Sha3::v256();
 
         topic_queue.read()[0].hash(&mut hasher);
@@ -245,18 +247,18 @@ mod tests {
         
         // Create second message depending on first
         let mut deps = BTreeSet::new();
-        deps.insert(first_message_hash);
+        deps.insert(hex::encode(first_message_hash));
         
         // Create second message 
         let msg2 = create_test_message("msg2", b"Dependent message");
-        let op2 = queue.enqueue(topic, msg2.clone(), actor, pk)
+        let op2 = queue.enqueue(hex::encode(topic), msg2.clone(), actor, pk)
             .expect("Failed to create dependent message");
         
         // Apply second message 
         queue.apply(op2);
         
         // Verify messages are properly ordered
-        let topic_queue = queue.read_topic(&topic).expect("Topic should exist");
+        let topic_queue = queue.read_topic(&hex::encode(topic)).expect("Topic should exist");
         let messages = topic_queue.read();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, msg1);

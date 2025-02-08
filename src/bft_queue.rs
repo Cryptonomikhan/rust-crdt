@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tiny_keccak::{Hasher, Sha3};
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey, VerifyingKey};
 
-type Hash = [u8; 32];
+type Hash = String;
 
 /// Error types specific to the validation of messages for the BFT queue 
 #[derive(Debug)]
@@ -101,6 +101,8 @@ impl<T: Sha3Hash> BFTQueue<T> {
             rec: rec.to_byte(),
         };
 
+        let hash = hex::encode(hash);
+        
         SignedMessage {
             message,
             signature,
@@ -162,7 +164,7 @@ impl<T: Clone + Debug + Sha3Hash> CmRDT for BFTQueue<T> {
         op.message.hash(&mut hasher);
         let mut hash = [0u8; 32];
         hasher.finalize(&mut hash);
-        if hash != op.hash {
+        if hex::encode(hash) != op.hash {
             eprintln!("Message hash doesn't match calculated hash");
             return Err(ValidationError::InvalidHash);
         }
@@ -216,7 +218,7 @@ impl<T: Clone + Debug + Sha3Hash>  CvRDT for BFTQueue<T> {
                     sig: String::new(),  // We don't need the actual signature for validation
                     rec: 0
                 },
-                hash: *hash
+                hash: hash.to_string()
             };
             
             // We skip the signature check during merge validation since we trust
@@ -242,7 +244,7 @@ impl<T: Clone + Debug + Sha3Hash>  CvRDT for BFTQueue<T> {
                         sig: String::new(),
                         rec: 0
                     },
-                    hash
+                    hash: hash.clone()
                 };
                 
                 if self.validate_op(&signed_msg).is_ok() {
@@ -446,7 +448,7 @@ mod tests {
 
         // Actor 1 creates second message (with properly incremented vclock)
         let mut deps = BTreeSet::new();
-        deps.insert(update1.hash);
+        deps.insert(update1.hash.clone());
         let msg2 = create_test_message("msg2", b"Second message");
         let update2 = queue1
             .enqueue(msg2.clone(), actor1.clone(), pk1.clone());
@@ -503,7 +505,7 @@ mod tests {
             .enqueue(msg.clone(), actor.clone(), pk1);
 
         // Modify the signature using a different key
-        let (_sig, rec) = pk2.sign_prehash_recoverable(&update.hash).unwrap();
+        let (_sig, rec) = pk2.sign_prehash_recoverable(&hex::decode(update.hash.clone()).unwrap()).unwrap();
         update.signature = RecoverableSignature {
             sig: hex::encode([0u8; 64]),
             rec: rec.to_byte(),
