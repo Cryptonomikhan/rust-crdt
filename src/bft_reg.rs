@@ -5,7 +5,7 @@ use tiny_keccak::{Hasher, Sha3};
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, SigningKey, VerifyingKey}; 
 use alloy_primitives::Address;
 
-type Hash = [u8; 32];
+type Hash = String;
 
 /// An error that can occur during validation of an update
 #[derive(Debug)]
@@ -84,7 +84,7 @@ where
 
     /// Get the hash of this update
     pub fn hash(&self) -> Hash {
-        self.hash
+        self.hash.clone()
     }
 }
 
@@ -141,12 +141,12 @@ where A: Ord + AsRef<[u8]> + Actor
 
     /// Iterate over the hashes of the content values.
     pub fn hashes(&self) -> BTreeSet<Hash> {
-        self.heads.keys().copied().collect()
+        self.heads.keys().cloned().collect()
     }
 
     /// Iterate over the hashes of the content values.
     pub fn hashes_and_nodes(&self) -> impl Iterator<Item = (Hash, &Node<T, A>)> {
-        self.heads.iter().map(|(hash, node)| (*hash, node))
+        self.heads.iter().map(|(hash, node)| (hash.clone(), node))
     }
 }
 
@@ -208,7 +208,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> CmRDT for BFTReg<T, String>
         op.op.hash(&mut hasher);
         let mut hash = [0u8; 32];
         hasher.finalize(&mut hash);
-        if hash != op.hash {
+        if hex::encode(hash) != op.hash {
             return Err(ValidationError::InvalidHash)
         }
 
@@ -221,19 +221,22 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> CmRDT for BFTReg<T, String>
 
         for child in &op.op.children {
             if !self.dag.contains_key(child) {
-                return Err(ValidationError::MissingChild(*child))
+                return Err(ValidationError::MissingChild(child.clone()))
             }
 
             // We can guarantee that child exists, given early exit above
             let child_op = self.dag.get(child).unwrap();
             if child_op.op.op.vclock > op.op.vclock {
                 log::error!("Child op vclock strictly greater than op vclock");
+                println!("Child op vclock strictly greater than op vclock");
+                println!("Child op vclock: {} > op vclock: {}", child_op.op.op.vclock, op.op.vclock);
                 return Err(ValidationError::InvalidVClock)
             }
             if child_op.op.op.vclock.get(&address) > op.op.vclock.get(&address) {
                 log::error!("Child op actors vclock greater than or equal to op vclock");
                 log::error!("Child op: {:?}\n\n", child_op);
                 log::error!("New op: {:?}", child_op);
+                println!("Child op actor vclock: {} > op actor vclock: {}", child_op.op.op.vclock.get(&address), op.op.vclock.get(&address));
                 return Err(ValidationError::InvalidVClock)
             }
         }
@@ -252,10 +255,11 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> CmRDT for BFTReg<T, String>
     fn apply(&mut self, op: Self::Op) {
         match &self.validate_op(&op) {
             Ok(()) => {
-                let hash = op.hash;
+                let hash = op.hash.clone();
                 let node = Node::new(op.clone(), op.op.value.clone());
-                self.dag.insert(node.op.hash, node.clone());
+                self.dag.insert(node.op.hash.clone(), node.clone());
                 if self.val.is_none() {
+                    println!("self.val is none");
                     self.val = Some(node.clone());
                     self.resolve_orphans(&hash);
                     self.update_heads();
@@ -264,14 +268,17 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> CmRDT for BFTReg<T, String>
                 // If the new op contains the current val as a child
                 // set new op to current val
                 if op.op.children.contains(&self.val.clone().unwrap().op.hash) {
+                    println!("new op containers current op as child");
                     self.val = Some(node.clone());
                 } else {
                     // Otherwise, check if the op has an explicitly higher vclock
                     if op.op.vclock > self.val.clone().unwrap().op.op.vclock {
+                        println!("new has higher vclock than current op");
                         // If so set current val to new op
                         self.val = Some(node.clone());
                     // Otherwise, check if the op's hash is lower than current val hash
                     } else if op.hash < self.val.clone().unwrap().op.hash {
+                        println!("new op hash is lower than current op, despite same vclock");
                         // If so, set current val to new op
                         self.val = Some(node.clone());
                         // Move current val into DAG as a head
@@ -285,11 +292,12 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> CmRDT for BFTReg<T, String>
                 self.update_heads();
             }
             Err(ValidationError::MissingChild(e)) => {
-                log::error!("Op is missingg a child: {}", hex::encode(e));
+                log::error!("Op is missing a child: {}", hex::encode(e));
                 self.add_orphan(op);
             }
             Err(e) => {
                 log::error!("Op rejected: {e}");
+                println!("Error applying op: {e}");
             }
         }
     }
@@ -346,6 +354,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
     /// Checks if the updates value is the current cannonical value of the register
     pub fn is_val(&self, val: &T) -> bool {
         if let Some(v) = self.val() {
+            println!("{:?} == {:?}", v.value(), val);
             v.value() == *val 
         } else { false }
     }
@@ -355,7 +364,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
         let mut children: BTreeSet<Hash> = BTreeSet::new();
         let vclock = if let Some(val) = &self.val {
             log::info!("Value is Some");
-            children.insert(val.op.hash);
+            children.insert(val.op.hash.clone());
             children.extend(self.get_heads());
             log::info!("Added heads and current value to children");
             let mut vclock = val.op.op.vclock.clone();
@@ -367,6 +376,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
             vclock
         } else {
             log::info!("Val is none, creating new vclock");
+            println!("Val is none, creating new vclock");
             let mut vclock = VClock::new();
             let dot = vclock.inc(actor.clone());
             vclock.apply(dot);
@@ -374,6 +384,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
         };
 
         log::info!("\n\nVCLOCK: {vclock:?}");
+        println!("\n\nVCLOCK: {vclock:?}");
 
         let op = Op {
             value,
@@ -382,6 +393,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
         };
 
         log::info!("Built op, hashing and signing");
+        println!("Built op, hashing and signing");
 
         let mut hasher = Sha3::v256();
         op.hash(&mut hasher);
@@ -394,7 +406,10 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
             rec: rec.to_byte()
         };
 
-        log::info!("Hashed and signed op, returning update update");
+        let hash = hex::encode(hash);
+
+        log::info!("Hashed and signed op, returning update update: {hash}");
+        println!("Hashed and signed op, returning update update: {hash}");
         Ok(Update {
             op,
             signature,
@@ -407,7 +422,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
     pub fn read(&self) -> Heads<T, String> {
         let mut map = BTreeMap::new();
         if let Some(val) = &self.val {
-            map.insert(val.op.hash, val.clone());
+            map.insert(val.op.hash.clone(), val.clone());
         }
         map.extend(
             self.heads.iter().filter_map(|hash| {
@@ -427,9 +442,12 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
         progress
     }
 
-    fn resolve_orphans(&mut self, hash: &[u8; 32]) -> bool {
+    fn resolve_orphans(&mut self, hash: &String) -> bool {
+        println!("Attempting to resolve orphans for {hash}");
+        println!("Orphans: {:?}", self.orphans);
         let mut progress = false;
-        if let Some(orphan_ops) = self.orphans.remove(hash) {
+        if let Some(orphan_ops) = self.orphans.remove(&hash.clone()) {
+            println!("Found orphans dependent on {hash}");
             progress = orphan_ops.iter().any(|v| self.resolve_orphan(v));
         }
         progress
@@ -446,7 +464,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
                     progress = self.resolve_orphans(missing_hash);
                 }
 
-                resolved.insert(*missing_hash);
+                resolved.insert(missing_hash.clone());
             }
 
             self.orphans.retain(|h, _| !resolved.contains(h));
@@ -480,7 +498,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
     fn add_orphan(&mut self, op: Update<T, String>) {
         for child in &op.op.children {
             if !self.dag.contains_key(child) {
-                self.orphans.entry(*child)
+                self.orphans.entry(child.clone())
                     .or_insert_with(Vec::new)
                     .push(op.clone());
             }     
@@ -497,7 +515,7 @@ impl<T: Clone + Sha3Hash + PartialEq + Debug> BFTReg<T, String> {
     fn update_heads(&mut self) {
         self.heads = self.get_heads().iter().cloned().collect();
         if let Some(val) = &self.val {
-            self.heads.insert(val.op.hash);
+            self.heads.insert(val.op.hash.clone());
         }
     }
 }
@@ -627,11 +645,15 @@ mod tests {
 
         // Create a second update referencing the first
         let mut children = BTreeSet::new();
-        children.insert(update1.hash);
+        children.insert(update1.hash.clone());
+
+        let mut vclock = update1.op().vclock.clone();
+        let dot = vclock.inc(actor);
+        vclock.apply(dot);
 
         let op = Op {
             value: value2.clone(),
-            vclock: VClock::new(),
+            vclock,
             children,
         };
 
@@ -646,6 +668,9 @@ mod tests {
             rec: rec.to_byte(),
         };
 
+        let hash = hex::encode(hash);
+        println!("Update 2 hash: {hash}");
+
         let update2 = Update {
             op,
             signature,
@@ -658,7 +683,7 @@ mod tests {
 
         // Ensure it was stored as an orphan
         assert!(reg.is_orphaned(&update2.hash));
-        assert!(reg.orphans.contains_key(&update1.hash));
+        assert!(reg.orphans.contains_key(&update1.hash.clone()));
         println!("Update 2 is orphaned by update 1");
 
         // Apply the first update to resolve the orphan

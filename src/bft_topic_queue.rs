@@ -106,7 +106,7 @@ mod tests {
     }
 
     // Helper function to create a topic hash
-    fn create_topic_hash(name: &str) -> Hash {
+    fn create_topic_hash(name: &str) -> [u8; 32] {
         let mut hasher = Sha3::v256();
         hasher.update(name.as_bytes());
         let mut hash = [0u8; 32];
