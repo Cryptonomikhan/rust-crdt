@@ -31,20 +31,23 @@ where
 /// in action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Map<K: Ord, V: Val<A>, A: Ord + Hash> {
-    // This clock stores the current version of the Map, it should
-    // be greator or equal to all Entry.clock's in the Map.
-    clock: VClock<A>,
-    entries: BTreeMap<K, Entry<V, A>>,
-    deferred: HashMap<VClock<A>, BTreeSet<K>>,
+    /// This clock stores the current version of the Map, it should
+    /// be greator or equal to all Entry.clock's in the Map.
+    pub clock: VClock<A>,
+    /// The entries ffor this map
+    pub entries: BTreeMap<K, Entry<V, A>>,
+    /// Entries that have been deferred 
+    pub deferred: HashMap<VClock<A>, BTreeSet<K>>,
 }
 
+/// The entry to a map
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Entry<V: Val<A>, A: Ord> {
-    // The entry clock tells us which actors edited this entry.
-    clock: VClock<A>,
+pub struct Entry<V: Val<A>, A: Ord> {
+    /// The entry clock tells us which actors edited this entry.
+    pub clock: VClock<A>,
 
-    // The nested CRDT
-    val: V,
+    /// The nested CRDT
+    pub val: V,
 }
 
 /// Operations which can be applied to the Map CRDT
